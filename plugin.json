@@ -1,0 +1,17 @@
+{
+  "name": "Ju-08",
+  "manufacturer": "Stephane Schmitz",
+  "version": "1.0.0",
+  "format": "vst2",
+  "kind": "instrument",
+  "uid": "SkWp",
+  "numInputs": 0,
+  "numOutputs": 2,
+  "category": "Synth",
+  "file32": "VST/ju-08-arm32.so",
+  "file64": "VST/ju-08-arm64.so",
+  "description": "Ju-08: a Jupiter-8 style polysynth. Two parts of four voices (or eight on one patch), two VCOs with sync and cross mod, HPF, 12/24 dB VCF, two envelopes, LFO, arpeggiator, 17 chorus and multi-effects, delay, reverb with shimmer, 64 patches.",
+  "author": "Stephane Schmitz",
+  "url": "",
+  "license": "MIT"
+}
