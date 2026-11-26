@@ -1,6 +1,7 @@
 // Checks of the bridge: lower preset, key modes, MFX type switching, state save/restore, program change, odd block sizes.
 #include "mpc_vst2_abi.h"
 #include "engine.h"
+#include "performances.h"
 #include <dlfcn.h>
 #include <cstdio>
 #include <cstring>
@@ -97,6 +98,37 @@ int main(int, char** argv) {
     check(pdisp(ucut).find("kHz") != std::string::npos && e->getParameter(e, ucut) == 1.f, ("CC 74 opens the cutoff: " + pdisp(ucut)).c_str());
     midi(0x90, 60, 100); double odd = 0; for (int k : {1, 7, 33, 50, 97, 200, 511, 13}) odd = std::fmax(odd, run(20, k)); midi(0x80, 60, 0);
     check(odd > 0.05 && odd <= 1.0, "odd block sizes (1..511 frames) render");
+    // the performances P01-P100: programs 64-163, both parts, the key mode and the performance settings
+    {
+        static Performance perf[kNumPerformances];
+        uint8_t d[G_COUNT]; defaultGlobals(d); d[G_KEYMODE] = KM_WHOLE; d[G_CH_U] = 0; d[G_CH_L] = 2;
+        buildPerformances(perf, d);
+        char nm[64] = {0};
+        e->dispatcher(e, effGetProgramNameIndexed, 64, 0, nm, 0);
+        std::string first = nm;
+        e->dispatcher(e, effGetProgramNameIndexed, 163, 0, nm, 0);
+        check(e->numPrograms == 164 && first == "P01 Brass Strings" && std::string(nm) == "P100 Grand Finale",
+              ("164 programs: \"" + first + "\" .. \"" + nm + "\"").c_str());
+        const int arp = find("Arpeggio"), split = find("Split Point"), porta = find("Portamento"), lvlL = find("Lower Level");
+        e->dispatcher(e, effSetProgram, 0, 64 + 30, nullptr, 0);           // P31 BASS AND PIANO: Split at C3
+        check(pdisp(km) == "Split" && std::lround(e->getParameter(e, split) * 127) == 48, ("P31: Split at " + pdisp(split)).c_str());
+        check(std::fabs(e->getParameter(e, lcut) - perf[30].lower.v[P_VCF_CUT] / 255.f) < 1e-6 &&
+              std::fabs(e->getParameter(e, ucut) - perf[30].upper.v[P_VCF_CUT] / 255.f) < 1e-6, "P31 sets both patches");
+        check(e->getParameter(e, st) == 1.f && pdisp(lp) == "- - -", "P31: stereo layers on, the lower preset selector cleared");
+        e->dispatcher(e, effSetProgram, 0, 64 + 55, nullptr, 0);           // P56 ARP SPLIT
+        check(e->getParameter(e, arp) == 1.f && pdisp(km) == "Split", "P56: arpeggio on in a Split");
+        e->dispatcher(e, effSetProgram, 0, 64 + 4, nullptr, 0);            // P05 FILTER WAVES: Dual, the arpeggio off again
+        check(e->getParameter(e, arp) == 0.f && pdisp(km) == "Dual" && pdisp(porta) == "Off", "P05: Dual; the last performance's arpeggio is off");
+        check(std::lround(e->getParameter(e, lvlL) * 255) == perf[4].global[G_BAL_L], "P05: its part levels");
+        midi(0x90, 48, 100); midi(0x90, 60, 100); double pf = run(200); midi(0x80, 48, 0); midi(0x80, 60, 0); run(400);
+        check(pf > 0.02 && pf < 1.0, "a performance plays");
+        float lowerNow = e->getParameter(e, lcut);
+        e->dispatcher(e, effSetProgram, 0, 3, nullptr, 0);                 // patch 14: the Upper patch only, as before
+        check(e->getParameter(e, lcut) == lowerNow && pdisp(km) == "Dual", "a patch after a performance changes the Upper patch only");
+        midi(0xC0, 64, 0); run(2);
+        check(e->dispatcher(e, effGetProgram, 0, 0, nullptr, 0) == 64 && pdisp(km) == "Dual", "MIDI program change 64 selects P01");
+        e->setParameter(e, km, 0.f); e->setParameter(e, arp, 0.f);
+    }
     midi(0xB0, 123, 0); run(600); check(run(40) < 1e-3 || true, "all notes off");
     e->dispatcher(e, effMainsChanged, 0, 0, nullptr, 0); e->dispatcher(e, effClose, 0, 0, nullptr, 0);
     printf("%s (%d failure%s)\n", fails ? "FAILED" : "ALL OK", fails, fails == 1 ? "" : "s");

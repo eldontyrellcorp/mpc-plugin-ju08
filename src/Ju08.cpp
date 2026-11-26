@@ -32,6 +32,7 @@
 #include "mpc_plugin.h"
 
 #include "engine.h"
+#include "performances.h"
 
 #include <cstdlib>
 #include <cstring>
@@ -183,6 +184,7 @@ public:
         globalDefaults_[j8::G_CH_U] = 0;                    // OMNI
         globalDefaults_[j8::G_CH_L] = 2;
         j8::applyFactory(bank_, kNumPresets);
+        j8::buildPerformances(perf_, globalDefaults_);
 
         // ---- 0: master volume (the MPC nudges parameter 0 on every load: harmless here)
         add({Slot::Volume, 0, 0}, mpc::intParam("volume", "Volume", 0, 255, globalDefaults_[j8::G_VOLUME]));
@@ -232,7 +234,7 @@ public:
             add({Slot::ChanU, 0, 0}, mpc::choiceParam("ch_u", "Upper MIDI Ch", ch, globalDefaults_[j8::G_CH_U]));
             add({Slot::ChanL, 0, 0}, mpc::choiceParam("ch_l", "Lower MIDI Ch", ch, globalDefaults_[j8::G_CH_L]));
         }
-        add({Slot::Stereo, 0, 0}, mpc::boolParam("stereo", "Stereo Layers", false));
+        idxStereo_ = add({Slot::Stereo, 0, 0}, mpc::boolParam("stereo", "Stereo Layers", false));
 
         // ---- lower patch, and the selector that loads a preset into it
         addPatch(1);
@@ -245,6 +247,8 @@ public:
         // ---- the 64 patches as built-in programs. Their values are applied by selectProgram() below, which
         //      writes the Upper patch and the effects and leaves everything else alone.
         for (int i = 0; i < kNumPresets; ++i) addProgram(presetName(i).c_str(), {});
+        // ---- then the 100 performances (P01-P100): both patches, the key mode and the performance settings
+        for (int i = 0; i < j8::kNumPerformances; ++i) addProgram(performanceName(i).c_str(), {});
 
         built_ = true;
         lastMfxType_.store(0, std::memory_order_relaxed);
@@ -393,13 +397,31 @@ public:
     }
 
     // ---------------------------------------------------------------- used by the dispatcher below
-    // A built-in program: the patch goes to the Upper part, with its effects. The Lower part and the
-    // performance settings stay as they are.
+    // A built-in program. 11-88: the patch goes to the Upper part, with its effects; the Lower part and the
+    // performance settings stay as they are. P01-P100: a performance sets both parts, the effects, the key mode
+    // and the performance settings (part levels, split point, arpeggio, portamento, bender, wheel).
     void selectProgram(int i)
     {
-        if (i < 0 || i >= kNumPresets) return;
+        if (i < 0 || i >= kNumPresets + j8::kNumPerformances) return;
         currentProgram_ = i;
-        loadPatch(0, bank_[i], true);
+        if (i < kNumPresets)
+        {
+            loadPatch(0, bank_[i], true);
+            return;
+        }
+        const j8::Performance& pf = perf_[i - kNumPresets];
+        bulkBegin();
+        loadPatch(0, pf.upper, true);
+        loadPatch(1, pf.lower, false);
+        for (int k = 0; k < j8::kNumPerformanceGlobals; ++k)
+        {
+            const uint8_t g = j8::kPerformanceGlobals[k];
+            for (int n = 0; n < kNumGlobals; ++n)
+                if (kGlobals[n].g == g) set(idxGlobal_ + n, (float)pf.global[g]);
+        }
+        set(idxStereo_, pf.stereoLayers ? 1.0f : 0.0f);
+        set(idxLowerPreset_, 0.0f);
+        bulkEnd();
     }
     void bulkBegin() { bulk_.fetch_add(1, std::memory_order_relaxed); }
     void bulkEnd()   { bulk_.fetch_sub(1, std::memory_order_relaxed); }
@@ -421,11 +443,18 @@ private:
         info.name = "Ju-08";
         info.vendor = "Stephane Schmitz";
         info.uniqueId = MPC_FOURCC('S', 'k', 'W', 'p');     // must equal "uid" in plugin.json
-        info.version = 1000;
+        info.version = 1100;
         info.isInstrument = true;
         info.numInputs = 0;
         info.numOutputs = 2;
         return info;
+    }
+
+    static std::string performanceName(int i)
+    {
+        char num[8];
+        std::snprintf(num, sizeof(num), "P%02d ", i + 1);
+        return std::string(num) + titleCase(perf_[i].name);
     }
 
     static std::string presetName(int i)
@@ -561,6 +590,11 @@ private:
             if (mask & 1) selectProgram(e.data[1]);
             if ((mask & 2) && engine_.global[j8::G_KEYMODE] == j8::KM_2PART) loadPatch(1, bank_[e.data[1]], false);
         }
+        else if (e.isProgramChange())
+        {
+            // 64-127: performances P01-P64, on the Upper part's channel
+            if (engine_.partMask(ch) & 1) selectProgram(e.data[1]);
+        }
     }
 
     // The CC map of the original (README of jupiter8_esp32): sound controls follow the part's channel.
@@ -599,6 +633,7 @@ private:
     }
 
     static j8::Patch bank_[kNumPresets];
+    static j8::Performance perf_[j8::kNumPerformances];
 
     j8::Engine engine_;
     j8::Patch init_;
@@ -606,7 +641,7 @@ private:
     std::vector<Slot> slots_;
     int idxPatch_[2] = {0, 0};
     int idxMfxOn_ = 0, idxMfxType_ = 0, idxMfxSlot_ = 0, idxDlyOn_ = 0, idxDly_ = 0, idxRevOn_ = 0, idxRev_ = 0;
-    int idxGlobal_ = 0, idxLowerPreset_ = 0;
+    int idxGlobal_ = 0, idxLowerPreset_ = 0, idxStereo_ = 0;
     bool built_ = false;
     std::atomic<int> lastMfxType_{0};
     std::atomic<int> bulk_{0};              // > 0 while a patch, a program or a project state is being written
@@ -620,6 +655,7 @@ private:
 };
 
 j8::Patch Ju08::bank_[kNumPresets];
+j8::Performance Ju08::perf_[j8::kNumPerformances];
 
 // ---------------------------------------------------------------------------------------------
 // Entry point. The framework's dispatcher does everything except three things this plugin needs:
